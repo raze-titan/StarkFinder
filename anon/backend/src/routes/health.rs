@@ -107,4 +107,12 @@ mod tests {
         assert!(body["version"].is_null());
         assert_eq!(body["error"], "Database connection failed");
     }
+
+    #[tokio::test]
+    async fn test_healthz_response() {
+        let response = healthz().await;
+        let body: serde_json::Value = serde_json::to_value(response.0).unwrap();
+
+        assert_eq!(body["ok"], true);
+    }
 }
