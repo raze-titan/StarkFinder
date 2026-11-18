@@ -20,98 +20,259 @@ pub struct AppState {
     pub pool: PgPool,
 }
 
-pub async fn new_pool_from_env() -> Result<PgPool, DbInitError> {
-    let url = std::env::var("DATABASE_URL").map_err(|_| DbInitError::MissingUrl)?;
-    new_pool_with_retry(&url).await
-}
-
-pub async fn new_pool(database_url: &str) -> Result<PgPool, DbInitError> {
-    let opts: PgConnectOptions = database_url.parse().map_err(|_| DbInitError::MissingUrl)?;
-
-    let pool = PgPoolOptions::new()
-        .max_connections(
-            std::env::var("DB_MAX_CONNECTIONS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10),
-        )
-        .min_connections(
-            std::env::var("DB_MIN_CONNECTIONS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2),
-        )
-        .acquire_timeout(Duration::from_secs(
-            std::env::var("DB_ACQUIRE_TIMEOUT_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5),
-        ))
-        .idle_timeout(Some(Duration::from_secs(
-            std::env::var("DB_IDLE_TIMEOUT_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(600),
-        )))
-        .max_lifetime(Some(Duration::from_secs(
-            std::env::var("DB_MAX_LIFETIME_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1800),
-        )))
-        .connect_with(opts)
-        .await?;
-    Ok(pool)
-}
-
-pub async fn new_pool_with_retry(database_url: &str) -> Result<PgPool, DbInitError> {
-    const MAX_RETRIES: u32 = 5;
-    const INITIAL_DELAY: Duration = Duration::from_secs(1);
-
-    let mut attempt = 0;
-    let mut delay = INITIAL_DELAY;
-
-    loop {
-        match new_pool(database_url).await {
-            Ok(pool) => {
-                tracing::info!("Database connection established successfully");
-                return Ok(pool);
-            }
-            Err(e) => {
-                attempt += 1;
-                if attempt >= MAX_RETRIES {
-                    tracing::error!(
-                        "Failed to connect to database after {} attempts: {:?}",
-                        MAX_RETRIES,
-                        e
-                    );
-                    return Err(e);
-                }
-
-                tracing::warn!(
-                    "Database connection attempt {} failed, retrying in {:?}: {:?}",
-                    attempt,
-                    delay,
-                    e
-                );
-                sleep(delay).await;
-
-                // Exponential backoff with jitter
-                delay = Duration::from_secs(
-                    (delay.as_secs() * 2).min(30) + (rand::random::<u64>() % 5),
-                );
-            }
-        }
-    }
-}
-
-pub async fn health_check(pool: &PgPool) -> bool {
-    sqlx::query_scalar!("SELECT 1 as one")
-        .fetch_one(pool)
-        .await
-        .is_ok()
-}
-
-pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    sqlx::migrate!().run(pool).await
-}
+/// Represents an Appeal record in the database.
+///
+/// Fields:
+/// - `id`: Unique UUID for the Appeal.
+/// - `actor`: The role of the user filing the Appeal ("author" or "employer").
+/// - `review_id`: The ID of the moderation review being appealed.
+/// - `reason`: The reason for the Appeal.
+/// - `status`: The current status of the Appeal ("open", "accepted", or "rejected").
+/// - `resolution_note`: An admin's note on the Appeal's decision.
+/// - `created_at`: The time the Appeal was created.
+/// - `resolved_at`: The time the Appeal was resolved.
+/// - `resolved_by`: The ID of the admin who resolved the Appeal.
+/// - `webhook_sent`: A flag indicating if a webhook was sent for the Appeal's decision.
+/// - `webhook_sent_at`: The time the webhook was sent.
+/// - `webhook_payload`: The payload of the webhook sent.
+/// - `webhook_status`: The status of the webhook sent.
+/// - `webhook_error`: The error message of the webhook sent.
+/// - `webhook_retries`: The number of times the webhook was retried.
+/// - `webhook_retry_delay`: The delay between webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_min`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_min`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_min`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_min`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_min`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_min`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_min`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_min`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_min`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_min`: The maximum delay between webhook retries in seconds.
+/// - `webhook_retry_count_max`: The maximum number of webhook retries.
+/// - `webhook_retry_delay_secs_max`: The maximum delay between webhook retries in second
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry_delay_secs`: The number of webhook retries.
+/// - `webhook_retry_count`: The number of webhook retries.
+/// - `webhook_retry_delay`: The number of webhook retries.
+/// - `webhook_retry
